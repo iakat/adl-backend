@@ -1,0 +1,4 @@
+python-preference = "system"
+resolution = "highest"
+cache-dir = ".uv-cache"
+compile-bytecode = true

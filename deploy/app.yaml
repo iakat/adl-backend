@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adl-backend
+spec:
+  replicas: 3
+  template:
+    spec:
+      # PodAntiAffinity to prefer running on different nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - adl-backend
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: adl-backend
+          image: ghcr.io/iakat/adl-backend:latest
+          ports:
+            - name: acars
+              containerPort: 5550
+              protocol: TCP
+            - name: hfdl
+              containerPort: 5551
+              protocol: TCP
+            - name: vdl2
+              containerPort: 5552
+              protocol: TCP
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: adl-backend-secrets
+                  key: github-token
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            tcpSocket:
+              port: 5550
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 5550
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          volumeMounts:
+            - name: data-volume
+              mountPath: /app/data
+      volumes:
+        - name: data-volume
+          emptyDir:
+            sizeLimit: 2Gi
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adl-backend
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: feed-acars.adsb.lol
+    external-dns.alpha.kubernetes.io/ttl: "60"
+  labels:
+    external-dns: cloudflare1
+spec:
+  loadBalancerClass: io.cilium/node
+  ipFamilyPolicy: RequireDualStack
+  externalTrafficPolicy: Local
+  type: LoadBalancer
+  ports:
+    - name: acars
+      port: 5550
+      targetPort: 5550
+      protocol: TCP
+    - name: hfdl
+      port: 5551
+      targetPort: 5551
+      protocol: TCP
+    - name: vdl2
+      port: 5552
+      targetPort: 5552
+      protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: adl-backend
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow incoming traffic from world to ADL backend ports
+    - fromEntities:
+        - "world"
+      toPorts:
+        - ports:
+            - port: "5550"
+              protocol: TCP
+            - port: "5551"
+              protocol: TCP
+            - port: "5552"
+              protocol: TCP
+  egress:
+    # Allow outgoing traffic to world for GitHub uploads
+    - toEntities:
+        - "world"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+---
+# ns
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: adsblol-adl
