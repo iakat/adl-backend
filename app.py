@@ -421,6 +421,9 @@ class ClientHandler:
             if writer.get_extra_info("peername")
             else "unknown"
         )
+        # Buffer size limits to prevent memory exhaustion
+        self.max_buffer_size = 1024 * 1024  # 1MB total buffer limit
+        self.max_message_size = 512 * 1024  # 512KB per message limit
 
     async def handle(self):
         """Handle client connection"""
@@ -439,15 +442,31 @@ class ClientHandler:
                 try:
                     buffer += data.decode("utf-8")
                 except UnicodeDecodeError as e:
-                    logger.error(f"Unicode decode error from {self.client_ip}: {e}")
-                    continue
+                    logger.error(f"Unicode decode error from {self.client_ip}: {e} - disconnecting client")
+                    break
+
+                # Check if buffer is getting too large to prevent memory exhaustion
+                if len(buffer) > self.max_buffer_size:
+                    logger.error(f"Buffer size exceeded ({len(buffer)} bytes) from {self.client_ip} - disconnecting client")
+                    break
 
                 # Process complete lines
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     line = line.strip()
                     if line:
-                        await self._process_message(line)
+                        # Check message size before processing
+                        message_size = len(line.encode('utf-8'))
+                        if message_size > self.max_message_size:
+                            logger.error(f"Message size exceeded ({message_size} bytes) from {self.client_ip} - disconnecting client")
+                            return
+
+                        try:
+                            await self._process_message(line)
+                        except ValueError as e:
+                            # JSON parsing error or other malformed data
+                            logger.error(f"Malformed message from {self.client_ip}: {e} - disconnecting client")
+                            return
 
         except asyncio.CancelledError:
             logger.info(f"Client connection cancelled: {self.client_ip}")
@@ -464,8 +483,12 @@ class ClientHandler:
         try:
             message = orjson.loads(line)
             await self.file_manager.write_message(self.data_type, message)
+        except orjson.JSONDecodeError as e:
+            # Raise ValueError to trigger client disconnection
+            raise ValueError(f"Invalid JSON: {e}")
         except Exception as e:
             logger.error(f"Message processing error from {self.client_ip}: {e}")
+            # Don't disconnect for other processing errors
 
 
 class ADSBLOLADL:
